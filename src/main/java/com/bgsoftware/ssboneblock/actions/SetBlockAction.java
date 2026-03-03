@@ -11,6 +11,7 @@ import com.bgsoftware.superiorskyblock.api.wrappers.SuperiorPlayer;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import dev.lone.itemsadder.api.CustomBlock;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -20,15 +21,17 @@ import java.util.Optional;
 
 public final class SetBlockAction extends Action {
 
+    private final String iaBlockId;
     private final Material type;
     private final byte data;
     private final SetContainerAction containerAction;
     private final String nbt;
 
-    private SetBlockAction(Material type, byte data, JsonObject container, @Nullable BlockOffset offsetPosition,
+    private SetBlockAction(Material type, String iaBlockId, byte data, JsonObject container, @Nullable BlockOffset offsetPosition,
                            String nbt, PhasesHandler phasesHandler, String fileName) {
         super(offsetPosition);
         this.type = type;
+        this.iaBlockId = iaBlockId;
         this.data = data;
         this.nbt = module.getNMSAdapter().isLegacy() ? removeBrackets(nbt) : nbt;
         this.containerAction = container == null ? null : SetContainerAction.fromJson(container, phasesHandler, fileName);
@@ -42,12 +45,25 @@ public final class SetBlockAction extends Action {
         Block block = location.getBlock();
         Key oldKey = block.getType() == Material.AIR ? null : Key.of(block);
 
-        module.getNMSAdapter().setBlock(location, type, data, nbt);
+        Key newKey;
 
-        if (containerAction != null)
-            containerAction.run(block.getState());
+        if (iaBlockId != null) {
+            // Place ItemsAdder custom block
+            CustomBlock customBlock = CustomBlock.place(iaBlockId, location);
+            if (customBlock == null) {
+                module.getPlugin().getLogger().warning("Failed to place IA block: " + iaBlockId);
+                return;
+            }
+            newKey = Key.of("IA:" + iaBlockId); // Custom key prefix for IA blocks
+        } else {
+            module.getNMSAdapter().setBlock(location, type, data, nbt);
 
-        Key newKey = Key.of(type, data);
+            if (containerAction != null)
+                containerAction.run(block.getState());
+
+            newKey = Key.of(type, data);
+        }
+
         if (newKey.equals(oldKey))
             return;
 
@@ -65,15 +81,23 @@ public final class SetBlockAction extends Action {
 
         String block = blockElement.getAsString();
         byte materialData = jsonObject.has("data") ? jsonObject.get("data").getAsByte() : 0;
-        Material type;
 
-        try {
-            type = Material.valueOf(block.toUpperCase());
-        } catch (IllegalArgumentException error) {
-            throw new ParsingException("Cannot parse `" + block + "` to a valid material type.");
+        Material type = null;
+        String iaBlockId = null;
+
+        // Try ItemsAdder first
+        if (CustomBlock.isInRegistry(block)) {
+            iaBlockId = block;
+        } else {
+            // Fallback to vanilla material
+            try {
+                type = Material.valueOf(block.toUpperCase());
+            } catch (IllegalArgumentException error) {
+                throw new ParsingException("Cannot parse `" + block + "` to a valid material or IA block id.");
+            }
         }
 
-        return Optional.of(new SetBlockAction(type,
+        return Optional.of(new SetBlockAction(type, iaBlockId,
                 materialData, jsonObject.getAsJsonObject("container"),
                 BlockOffsetFactory.createOffset(jsonObject.get("offset")),
                 jsonObject.has("nbt") ? (module.getNMSAdapter().isLegacy() ? "" : block) +

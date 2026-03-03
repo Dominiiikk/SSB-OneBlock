@@ -5,6 +5,7 @@ import com.bgsoftware.ssboneblock.task.NextPhaseTimer;
 import com.bgsoftware.ssboneblock.utils.EntityTypes;
 import com.bgsoftware.ssboneblock.utils.WorldUtils;
 import com.bgsoftware.superiorskyblock.api.wrappers.SuperiorPlayer;
+import dev.lone.itemsadder.api.CustomBlock;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -47,12 +48,16 @@ public final class BlocksListener implements Listener {
 
     private final OneBlockModule module;
 
+    private boolean fakeBreakEvent = false;
+
     public BlocksListener(OneBlockModule module) {
         this.module = module;
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onOneBlockBreak(BlockBreakEvent e) {
+        if (fakeBreakEvent) return;
+
         Player player = e.getPlayer();
         Block block = e.getBlock();
         Location blockLocation = block.getLocation();
@@ -65,14 +70,19 @@ public final class BlocksListener implements Listener {
 
             BlockBreakEvent fakeEvent = new BlockBreakEvent(e.getBlock(), e.getPlayer());
             try {
+                fakeBreakEvent = true;
                 calledBlockBreakEvent.set(blockLocation);
                 Bukkit.getPluginManager().callEvent(fakeEvent);
             } finally {
                 calledBlockBreakEvent.remove();
+                fakeBreakEvent = false;
             }
 
-            if (fakeEvent.isCancelled())
-                return;
+            // Detect ItemsAdder block
+            CustomBlock customBlock = CustomBlock.byAlreadyPlaced(block);
+
+            // Only respect cancellation for vanilla blocks
+            if (fakeEvent.isCancelled() && customBlock == null) return;
 
             boolean shouldDropItems;
             try {
@@ -87,36 +97,54 @@ public final class BlocksListener implements Listener {
             if (barrierPlacement)
                 underBlock.setType(Material.BARRIER);
 
-            ItemStack inHandItem = e.getPlayer().getItemInHand();
+            ItemStack inHandItem = e.getPlayer().getInventory().getItemInMainHand();
             blockLocation.add(0.5, 1, 0.5);
+            Location dropLocation = blockLocation.clone().add(0.5, 1.01, 0.5);
             World blockWorld = block.getWorld();
 
             if (shouldDropItems) {
-                Collection<ItemStack> drops = block.getDrops(inHandItem);
-                BlockState blockState = block.getState();
-                boolean dropNaturally = module.getSettings().dropNaturally;
 
-                if (blockState instanceof InventoryHolder &&
-                        WorldUtils.shouldDropInventory((InventoryHolder) blockState)) {
-                    Inventory inventory = ((InventoryHolder) blockState).getInventory();
-                    Collections.addAll(drops, inventory.getContents());
-                    inventory.clear();
-                }
-
-                drops.forEach(itemStack -> {
-                    if (itemStack != null && itemStack.getType() != Material.AIR && itemStack.getAmount() > 0)
-                        if (dropNaturally) {
-                            blockWorld.dropItemNaturally(blockLocation, itemStack);
-                        } else {
-                            Item item = blockWorld.spawn(blockLocation, Item.class);
-                            item.setItemStack(itemStack);
-                            item.setVelocity(new Vector(0, 0, 0));
+                if (customBlock != null) {
+                    // ItemsAdder block drops
+                    List<ItemStack> iaDrops = customBlock.getLoot(inHandItem, false);
+                    for (ItemStack item : iaDrops) {
+                        if (item != null && item.getType() != Material.AIR && item.getAmount() > 0) {
+                            if (module.getSettings().dropNaturally) {
+                                blockWorld.dropItemNaturally(dropLocation, item);
+                            } else {
+                                Item dropped = blockWorld.dropItem(dropLocation, item);
+                                dropped.setVelocity(new Vector(0, 0.05, 0));
+                            }
                         }
-                });
+                    }
+                } else {
+
+                    Collection<ItemStack> drops = block.getDrops(inHandItem);
+                    BlockState blockState = block.getState();
+                    boolean dropNaturally = module.getSettings().dropNaturally;
+
+                    if (blockState instanceof InventoryHolder &&
+                            WorldUtils.shouldDropInventory((InventoryHolder) blockState)) {
+                        Inventory inventory = ((InventoryHolder) blockState).getInventory();
+                        Collections.addAll(drops, inventory.getContents());
+                        inventory.clear();
+                    }
+
+                    drops.forEach(itemStack -> {
+                        if (itemStack != null && itemStack.getType() != Material.AIR && itemStack.getAmount() > 0)
+                            if (dropNaturally) {
+                                blockWorld.dropItemNaturally(dropLocation, itemStack);
+                            } else {
+                                Item item = blockWorld.spawn(dropLocation, Item.class);
+                                item.setItemStack(itemStack);
+                                item.setVelocity(new Vector(0, 0.05, 0));
+                            }
+                    });
+                }
             }
 
             if (e.getExpToDrop() > 0) {
-                ExperienceOrb orb = blockWorld.spawn(blockLocation, ExperienceOrb.class);
+                ExperienceOrb orb = blockWorld.spawn(dropLocation, ExperienceOrb.class);
                 orb.setExperience(e.getExpToDrop());
             }
 
@@ -124,7 +152,14 @@ public final class BlocksListener implements Listener {
                 module.getNMSAdapter().simulateToolBreak(e.getPlayer(), e.getBlock());
 
             SuperiorPlayer superiorPlayer = module.getPlugin().getPlayers().getSuperiorPlayer(e.getPlayer());
-            block.setType(Material.AIR);
+
+            if (customBlock != null) {
+                customBlock.remove();
+                block.setType(Material.AIR);
+            } else {
+                block.setType(Material.AIR);
+            }
+
             module.getPhasesHandler().runNextAction(island, superiorPlayer);
 
             if (barrierPlacement)

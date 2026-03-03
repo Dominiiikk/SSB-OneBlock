@@ -14,8 +14,14 @@ import com.bgsoftware.superiorskyblock.api.island.Island;
 import com.bgsoftware.superiorskyblock.api.wrappers.SuperiorPlayer;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import net.kyori.adventure.audience.Audience;
+import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.entity.Player;
 
 import javax.annotation.Nullable;
 import java.io.File;
@@ -33,10 +39,22 @@ public final class PhasesHandler {
     private final DataStore dataStore;
     private final PhaseData[] phaseData;
 
+    private final Map<Player, BossBar> activeBars = new ConcurrentHashMap<>();
+    private final Map<Player, Long> barExpiry = new ConcurrentHashMap<>();
+
+    private static final long BAR_TIMEOUT_MS = 3000;
+
     public PhasesHandler(OneBlockModule module, DataStore dataStore) {
         this.module = module;
         this.dataStore = dataStore;
         phaseData = loadData();
+
+        Bukkit.getScheduler().runTaskTimer(
+                module.getPlugin(),
+                this::cleanupExpiredBars,
+                20L,
+                20L
+        );
     }
 
     public JsonArray getPossibilities(String possibilities) {
@@ -94,6 +112,10 @@ public final class PhasesHandler {
                 islandPhaseData.getPhaseBlock(),
                 phaseData.getActionsSize());
 
+        if (superiorPlayer != null) {
+            showOrUpdatePhaseBar(superiorPlayer.asPlayer(), islandPhaseData, phaseData);
+        }
+
         // We check for last phase here as well.
         if (module.getSettings().phasesLoop && islandPhaseData.getPhaseBlock() + 1 == phaseData.getActionsSize() &&
                 islandPhaseData.getPhaseLevel() + 1 == this.phaseData.length)
@@ -148,6 +170,47 @@ public final class PhasesHandler {
         return !island.isSpawn() && (module.getSettings().whitelistedSchematics.isEmpty() ||
                 module.getSettings().whitelistedSchematics.contains(island.getSchematicName().toUpperCase()));
     }
+
+    private void showOrUpdatePhaseBar(Player player, IslandPhaseData phaseData, PhaseData phase) {
+        int current = phaseData.getPhaseBlock();
+        int total = phase.getActionsSize();
+        float progress = Math.min(1.0f, (float) current / total);
+
+        Component title = MiniMessage.miniMessage().deserialize(
+                "<gradient:#ff0000:#FD6F6F><b>ᴘʀᴏɢʀᴇѕѕ ᴠᴇ ꜰᴀᴢɪ:</b></gradient>" + " <#81e600>" + current + "</#81e600><dark_gray>/</dark_gray><gold>" + total + "</gold>"
+        );
+
+        BossBar bar = activeBars.computeIfAbsent(player, p -> {
+            BossBar b = BossBar.bossBar(title, progress,
+                    BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS);
+            Audience audience = (Audience) player;
+            audience.showBossBar(b);
+            return b;
+        });
+
+        bar.name(title);
+        bar.progress(progress);
+
+        // refresh expiry
+        barExpiry.put(player, System.currentTimeMillis() + BAR_TIMEOUT_MS);
+    }
+
+    private void cleanupExpiredBars() {
+        long now = System.currentTimeMillis();
+
+        barExpiry.forEach((player, expiry) -> {
+            if (expiry < now) {
+                BossBar bar = activeBars.remove(player);
+                if (bar != null && player.isOnline()) {
+                    Audience audience = (Audience) player;
+                    audience.hideBossBar(bar);
+                }
+                barExpiry.remove(player);
+            }
+        });
+    }
+
+
 
     public DataStore getDataStore() {
         return dataStore;
