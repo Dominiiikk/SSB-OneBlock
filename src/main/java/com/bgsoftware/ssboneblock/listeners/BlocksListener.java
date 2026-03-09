@@ -98,7 +98,6 @@ public final class BlocksListener implements Listener {
                 underBlock.setType(Material.BARRIER);
 
             ItemStack inHandItem = e.getPlayer().getInventory().getItemInMainHand();
-            blockLocation.add(0.5, 1, 0.5);
             Location dropLocation = blockLocation.clone().add(0.5, 1.01, 0.5);
             World blockWorld = block.getWorld();
 
